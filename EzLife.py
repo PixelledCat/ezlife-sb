@@ -2114,7 +2114,7 @@ SUBSCRIBE_JSON_FILE = 'subscribe.json'
 class Crypto(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.supported_currencies = {'btc': 'bitcoin', 'eth': 'ethereum', 'ltc': 'litecoin', 'xrp': 'ripple', 'usdt': 'tether', 'usdc': 'usd-coin', 'doge': 'dogecoin'}
+        self.supported_currencies = {'btc': 'bitcoin', 'eth': 'ethereum', 'ltc': 'litecoin', 'sol': 'solana', 'xrp': 'ripple', 'usdt': 'tether', 'usdc': 'usd-coin', 'doge': 'dogecoin'}
         self.subscribed_addresses = self.load_subscribed_addresses()
         self.hookie_webhook_url = config.get('CryptoWebhook', 'cryptowebhookurl')
         self.config = self.loadd_config()
@@ -2249,7 +2249,7 @@ class Crypto(commands.Cog):
                 else:
                     error_msg = '# - Transaction Failed \n- Invalid API/Signature ID \n- Insufficient Bal \n- Wrong Addy'
                     await ctx.send(error_msg)
-    @commands.command(name='getbal', aliases=['bal', 'ltcbal'], brief='Shows User LTC Bal', usage='.getbal <ltc.addy>')
+    @commands.command(name='ltc', aliases=['getbal', 'bal', 'ltcbal'], brief='Shows User LTC Bal', usage='.ltc <ltc.addy>')
     @ezlife()
     async def getbal(self, ctx, ltcaddress: str=None):
         if ltcaddress is None:
@@ -2307,7 +2307,7 @@ class Crypto(commands.Cog):
             except Exception as e:
                 await ctx.send('Error occurred while fetching crypto')
                 print(e)
-    @commands.command(name='getbtcbal', aliases=['btcbal'], brief='Shows User BTC Bal', usage='.getbtcbal <btc.addy>')
+    @commands.command(name='btc', aliases=['getbtcbal', 'btcbal'], brief='Shows User BTC Bal', usage='.btc <btc.addy>')
     @ezlife()
     async def getbtcbal(self, ctx, btcaddress: str=None):
         if btcaddress is None:
@@ -2344,7 +2344,7 @@ class Crypto(commands.Cog):
                         message += f'__Total BTC Received__ ~ **${usd_total_received:.2f} USD**\n'
                         message += f'__Unconfirmed BTC__ ~ **${usd_unconfirmed_balance:.2f} USD**'
                         await ctx.reply(message, delete_after=30)
-    @commands.command(name='getethbal', aliases=['ethbal'], brief='Shows User ETH Bal', usage='.getethbal <eth.addy>')
+    @commands.command(name='eth', aliases=['getethbal', 'ethbal'], brief='Shows User ETH Bal', usage='.eth <eth.addy>')
     @ezlife()
     async def getethbal(self, ctx, ethaddress: str=None):
         if ethaddress is None:
@@ -2402,6 +2402,72 @@ class Crypto(commands.Cog):
             except Exception as e:
                 await ctx.reply('Error occurred while converting', delete_after=5)
                 print(e)
+    def get_coin_usd(self, coin_id):
+        url = f'https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd'
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        return response.json()[coin_id]['usd']
+    def get_erc20_balance(self, address, contract, decimals):
+        data = '0x70a08231' + address[2:].lower().rjust(64, '0')
+        payload = {'jsonrpc': '2.0', 'id': 1, 'method': 'eth_call', 'params': [{'to': contract, 'data': data}, 'latest']}
+        response = requests.post('https://ethereum-rpc.publicnode.com', json=payload, timeout=10)
+        result = response.json()
+        if 'error' in result:
+            raise ValueError(result['error'].get('message', 'RPC error'))
+        return int(result['result'], 16) / (10 ** decimals)
+    async def send_crypto_balance(self, ctx, name, address, balance, coin_id, display_decimals=8):
+        try:
+            usd_value = balance * self.get_coin_usd(coin_id)
+            message = f'{name} Address: `{address}`\n'
+            message += f'__Balance__ ~ **{balance:.{display_decimals}f} {name}**\n'
+            message += f'__USD Value__ ~ **${usd_value:.2f}**'
+        except Exception as e:
+            print(e)
+            message = f'{name} Address: `{address}`\n'
+            message += f'__Balance__ ~ **{balance:.{display_decimals}f} {name}**'
+        await ctx.reply(message, delete_after=30)
+    @commands.command(name='sol', aliases=['solbal'], brief='Shows User SOL Bal', usage='.sol <sol.addy>')
+    @ezlife()
+    async def get_solbal(self, ctx, soladdress: str=None):
+        if soladdress is None:
+            await ctx.reply('- Please provide a SOL address', delete_after=5)
+            return
+        if not 32 <= len(soladdress) <= 44:
+            await ctx.reply('- The provided SOL address isnt valid', delete_after=5)
+            return
+        try:
+            payload = {'jsonrpc': '2.0', 'id': 1, 'method': 'getBalance', 'params': [soladdress]}
+            response = requests.post('https://api.mainnet-beta.solana.com', json=payload, timeout=10)
+            data = response.json()
+            if 'error' in data:
+                await ctx.reply('- The provided SOL address isnt valid', delete_after=5)
+                return
+            balance = data['result']['value'] / 1000000000
+        except Exception as e:
+            await ctx.reply(f'Failed to retrieve SOL balance: {str(e)}', delete_after=5)
+            return
+        await self.send_crypto_balance(ctx, 'SOL', soladdress, balance, 'solana')
+    async def erc20_balance_cmd(self, ctx, name, address, contract, coin_id):
+        if address is None:
+            await ctx.reply(f'- Please provide an ETH address for {name}', delete_after=5)
+            return
+        if len(address) != 42 or not address.startswith('0x'):
+            await ctx.reply('- The provided ETH address isnt valid', delete_after=5)
+            return
+        try:
+            balance = self.get_erc20_balance(address, contract, 6)
+        except Exception as e:
+            await ctx.reply(f'Failed to retrieve {name} balance: {str(e)}', delete_after=5)
+            return
+        await self.send_crypto_balance(ctx, name, address, balance, coin_id, 2)
+    @commands.command(name='usdc', aliases=['usdcbal'], brief='Shows User USDC (ERC20) Bal', usage='.usdc <eth.addy>')
+    @ezlife()
+    async def get_usdcbal(self, ctx, ethaddress: str=None):
+        await self.erc20_balance_cmd(ctx, 'USDC', ethaddress, '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', 'usd-coin')
+    @commands.command(name='usdt', aliases=['usdtbal'], brief='Shows User USDT (ERC20) Bal', usage='.usdt <eth.addy>')
+    @ezlife()
+    async def get_usdtbal(self, ctx, ethaddress: str=None):
+        await self.erc20_balance_cmd(ctx, 'USDT', ethaddress, '0xdAC17F958D2ee523a2206206994597C13D831ec7', 'tether')
 def setup(bot):
     bot.add_cog(Crypto(bot))
 class Nsfw(commands.Cog):
