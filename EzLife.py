@@ -53,6 +53,18 @@ from threading import Thread
 from tasksio import TaskPool
 from html import escape
 from colorama import Fore, Style
+def ensure_runtime_files():
+    defaults = {
+        'config.ini': '[EzLife]\ntoken =\nuserid =\nprefix =!\n\n[DeleteMsgWebhook]\ndeleted_logs = False\ndeletemsgwebhookurl =\n\n[SniperWebhook]\nsniperwebhookurl =\n\n[CryptoWebhook]\ncryptowebhookurl =\n\n[Misc]\nwebhookurl =\n',
+        'config.json': json.dumps({'enabled': False, 'ping_webhook_url': None}, indent=4) + '\n',
+        'ltc.yaml': 'apikey: ""\naddress: ""\nsignatureid: ""\n',
+    }
+    for filename, content in defaults.items():
+        if not os.path.exists(filename):
+            with open(filename, 'w') as file:
+                file.write(content)
+            print(f'Created {filename}')
+ensure_runtime_files()
 config = configparser.ConfigParser()
 config.read('config.ini')
 if os.name == 'nt':
@@ -2672,4 +2684,4 @@ for cog_class in cog_classes:
 try:
     bot.run(token, reconnect=True)
 except discord.LoginFailure:
-    print(Fore.MAGENTA + 'Couldn\'t connect, Your acc token might be invalid If it\'s not, Report to Phinxz https://discord.gg/stellarshop' + Style.RESET_ALL)
+    print(Fore.MAGENTA + 'Couldn\'t connect, Your acc token might be invalid If it\'s not, Report to Phinxz https://discord.gg/stellar-shop' + Style.RESET_ALL)
