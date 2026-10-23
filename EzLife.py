@@ -58,6 +58,7 @@ def ensure_runtime_files():
         'config.ini': '[EzLife]\ntoken =\nuserid =\nprefix =!\n\n[DeleteMsgWebhook]\ndeleted_logs = False\ndeletemsgwebhookurl =\n\n[SniperWebhook]\nsniperwebhookurl =\n\n[CryptoWebhook]\ncryptowebhookurl =\n\n[Misc]\nwebhookurl =\n',
         'config.json': json.dumps({'enabled': False, 'ping_webhook_url': None}, indent=4) + '\n',
         'ltc.yaml': 'apikey: ""\naddress: ""\nsignatureid: ""\n',
+        'crypto_addresses.json': json.dumps({}, indent=4) + '\n',
     }
     for filename, content in defaults.items():
         if not os.path.exists(filename):
@@ -443,10 +444,12 @@ def ezlife():
 async def help(ctx, *, query=None):
     prefix = command_prefix
     await ctx.message.delete()
+    if not query and ctx.invoked_with.lower() != 'help':
+        query = ctx.invoked_with
     if not query:
         cogs = bot.cogs.keys()
         help_text = '# **EzLife**\n'
-        help_text += '- ' + prefix + 'help <modules> to see cmds\n'
+        help_text += f'- {prefix}help <module> or {prefix}<module> to see cmds\n'
         for cog in cogs:
             help_text += f'_{cog}_, '
         help_text = help_text[:(-2)]
@@ -466,8 +469,10 @@ async def help(ctx, *, query=None):
             cog_commands = found_cog.get_commands()
             help_text = f'**## EzLife {found_cog.qualified_name} Cmds**\n\n'
             for command in cog_commands:
-                help_text += f'_{command.name}_, '
-            help_text = help_text[:(-2)]
+                usage = command.usage or command.name
+                if usage.startswith('.'):
+                    usage = prefix + usage[1:]
+                help_text += f'_{usage}_\n'
             await ctx.send(help_text, delete_after=30)
 @bot.event
 async def on_command_error(ctx, error):
@@ -2111,10 +2116,14 @@ class Vc(commands.Cog):
 def setup(bot):
     bot.add_cog(Vc(bot))
 SUBSCRIBE_JSON_FILE = 'subscribe.json'
+CRYPTO_ADDRESSES_FILE = 'crypto_addresses.json'
 class Crypto(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.supported_currencies = {'btc': 'bitcoin', 'eth': 'ethereum', 'ltc': 'litecoin', 'sol': 'solana', 'xrp': 'ripple', 'usdt': 'tether', 'usdc': 'usd-coin', 'doge': 'dogecoin'}
+        self.address_coins = ['ltc', 'btc', 'eth', 'sol', 'usdc', 'usdt']
+        self.erc20_tokens = {'usdc': ('0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', 6), 'usdt': ('0xdAC17F958D2ee523a2206206994597C13D831ec7', 6)}
+        self.saved_addresses = self.load_saved_addresses()
         self.subscribed_addresses = self.load_subscribed_addresses()
         self.hookie_webhook_url = config.get('CryptoWebhook', 'cryptowebhookurl')
         self.config = self.loadd_config()
@@ -2249,44 +2258,22 @@ class Crypto(commands.Cog):
                 else:
                     error_msg = '# - Transaction Failed \n- Invalid API/Signature ID \n- Insufficient Bal \n- Wrong Addy'
                     await ctx.send(error_msg)
-    @commands.command(name='ltc', aliases=['getbal', 'bal', 'ltcbal'], brief='Shows User LTC Bal', usage='.ltc <ltc.addy>')
+    @commands.command(name='getbal', aliases=['bal', 'ltcbal'], brief='Fetch a crypto balance', usage='.getbal <coin> [address]')
     @ezlife()
-    async def getbal(self, ctx, ltcaddress: str=None):
-        if ltcaddress is None:
-            await ctx.send('- Please provide a LTC Address', delete_after=5)
+    async def getbal(self, ctx, coin_or_address: str=None, address: str=None):
+        if coin_or_address is None:
+            await ctx.reply('- Usage: .getbal <coin> [address]', delete_after=10)
             return
-        else:
-            if len(ltcaddress) not in [34, 43]:
-                await ctx.reply('- The provided LTC address isnt valid', delete_after=5)
+        coin = coin_or_address.lower()
+        if coin in self.address_coins:
+            address = address or self.saved_addresses.get(coin)
+            if not address:
+                await ctx.reply(f'- No saved {coin.upper()} address. Use .addaddress {coin} <address>', delete_after=10)
                 return
-            else:
-                response = requests.get(f'https://api.blockcypher.com/v1/ltc/main/addrs/{ltcaddress}/balance')
-                if response.status_code != 200:
-                    if response.status_code == 400:
-                        await ctx.send('Invalid LTC address.')
-                    else:
-                        await ctx.send(f'Failed to retrieve balance. Error {response.status_code}. Please try again later', delete_after=5)
-                    return None
-                else:
-                    data = response.json()
-                    balance = data['balance'] / 100000000
-                    total_balance = data['total_received'] / 100000000
-                    unconfirmed_balance = data['unconfirmed_balance'] / 100000000
-                    cg_response = requests.get('https://api.coingecko.com/api/v3/simple/price?ids=litecoin&vs_currencies=usd')
-                    if cg_response.status_code != 200:
-                        await ctx.send(f'Failed to retrieve the current price of LTC. Error {cg_response.status_code}. Please try again later', delete_after=5)
-                        return
-                    else:
-                        usd_price = cg_response.json()['litecoin']['usd']
-                        usd_balance = balance * usd_price
-                        usd_total_balance = total_balance * usd_price
-                        usd_unconfirmed_balance = unconfirmed_balance * usd_price
-                        message = f'LTC Address: `{ltcaddress}`\n'
-                        message += f'__Current LTC__ ~ **${usd_balance:.2f} USD**\n'
-                        message += f'__Total LTC Received__ ~ **${usd_total_balance:.2f} USD**\n'
-                        message += f'__Unconfirmed LTC__ ~ **${usd_unconfirmed_balance:.2f} USD**'
-                        await ctx.send(message, delete_after=30)
-                        await self.delete_message(ctx.message)
+        else:
+            address = coin_or_address
+            coin = self.detect_coin(address)
+        await self.run_balance_check(ctx, coin, address)
     @commands.command(name='price', aliases=['current'], brief='Shows current crypto prices', usage='.price <crypto.name>')
     @ezlife()
     async def price(self, ctx, crypto='ltc'):
@@ -2307,7 +2294,7 @@ class Crypto(commands.Cog):
             except Exception as e:
                 await ctx.send('Error occurred while fetching crypto')
                 print(e)
-    @commands.command(name='btc', aliases=['getbtcbal', 'btcbal'], brief='Shows User BTC Bal', usage='.btc <btc.addy>')
+    @commands.command(name='getbtcbal', aliases=['btcbal'], brief='Shows User BTC Bal', usage='.getbtcbal <btc.addy>')
     @ezlife()
     async def getbtcbal(self, ctx, btcaddress: str=None):
         if btcaddress is None:
@@ -2344,7 +2331,7 @@ class Crypto(commands.Cog):
                         message += f'__Total BTC Received__ ~ **${usd_total_received:.2f} USD**\n'
                         message += f'__Unconfirmed BTC__ ~ **${usd_unconfirmed_balance:.2f} USD**'
                         await ctx.reply(message, delete_after=30)
-    @commands.command(name='eth', aliases=['getethbal', 'ethbal'], brief='Shows User ETH Bal', usage='.eth <eth.addy>')
+    @commands.command(name='getethbal', aliases=['ethbal'], brief='Shows User ETH Bal', usage='.getethbal <eth.addy>')
     @ezlife()
     async def getethbal(self, ctx, ethaddress: str=None):
         if ethaddress is None:
@@ -2426,7 +2413,7 @@ class Crypto(commands.Cog):
             message = f'{name} Address: `{address}`\n'
             message += f'__Balance__ ~ **{balance:.{display_decimals}f} {name}**'
         await ctx.reply(message, delete_after=30)
-    @commands.command(name='sol', aliases=['solbal'], brief='Shows User SOL Bal', usage='.sol <sol.addy>')
+    @commands.command(name='getsolbal', aliases=['solbal'], brief='Shows User SOL Bal', usage='.getsolbal <sol.addy>')
     @ezlife()
     async def get_solbal(self, ctx, soladdress: str=None):
         if soladdress is None:
@@ -2460,14 +2447,126 @@ class Crypto(commands.Cog):
             await ctx.reply(f'Failed to retrieve {name} balance: {str(e)}', delete_after=5)
             return
         await self.send_crypto_balance(ctx, name, address, balance, coin_id, 2)
-    @commands.command(name='usdc', aliases=['usdcbal'], brief='Shows User USDC (ERC20) Bal', usage='.usdc <eth.addy>')
+    @commands.command(name='getusdcbal', aliases=['usdcbal'], brief='Shows User USDC (ERC20) Bal', usage='.getusdcbal <eth.addy>')
     @ezlife()
     async def get_usdcbal(self, ctx, ethaddress: str=None):
         await self.erc20_balance_cmd(ctx, 'USDC', ethaddress, '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', 'usd-coin')
-    @commands.command(name='usdt', aliases=['usdtbal'], brief='Shows User USDT (ERC20) Bal', usage='.usdt <eth.addy>')
+    @commands.command(name='getusdtbal', aliases=['usdtbal'], brief='Shows User USDT (ERC20) Bal', usage='.getusdtbal <eth.addy>')
     @ezlife()
     async def get_usdtbal(self, ctx, ethaddress: str=None):
         await self.erc20_balance_cmd(ctx, 'USDT', ethaddress, '0xdAC17F958D2ee523a2206206994597C13D831ec7', 'tether')
+    def load_saved_addresses(self):
+        try:
+            with open(CRYPTO_ADDRESSES_FILE, 'r') as file:
+                return json.load(file)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+    def save_saved_addresses(self):
+        with open(CRYPTO_ADDRESSES_FILE, 'w') as file:
+            json.dump(self.saved_addresses, file, indent=4)
+    def valid_address(self, coin, address):
+        if coin in ('eth', 'usdc', 'usdt'):
+            return len(address) == 42 and address.startswith('0x')
+        if coin == 'sol':
+            return 32 <= len(address) <= 44
+        if coin == 'btc':
+            return len(address) in (34, 42, 43)
+        return len(address) in (34, 43)
+    def detect_coin(self, address):
+        if address.startswith('0x') and len(address) == 42:
+            return 'eth'
+        if address.lower().startswith('bc1'):
+            return 'btc'
+        return 'ltc'
+    def fetch_balance(self, coin, address):
+        if coin in ('ltc', 'btc', 'eth'):
+            response = requests.get(f'https://api.blockcypher.com/v1/{coin}/main/addrs/{address}/balance', timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            divisor = 10 ** 18 if coin == 'eth' else 10 ** 8
+            return int(data['balance']) / divisor
+        if coin == 'sol':
+            payload = {'jsonrpc': '2.0', 'id': 1, 'method': 'getBalance', 'params': [address]}
+            response = requests.post('https://api.mainnet-beta.solana.com', json=payload, timeout=10)
+            data = response.json()
+            if 'error' in data:
+                raise ValueError(data['error'].get('message', 'RPC error'))
+            return data['result']['value'] / 10 ** 9
+        contract, decimals = self.erc20_tokens[coin]
+        return self.get_erc20_balance(address, contract, decimals)
+    async def run_balance_check(self, ctx, coin, address):
+        if not self.valid_address(coin, address):
+            await ctx.reply(f'- The provided {coin.upper()} address isnt valid', delete_after=5)
+            return
+        try:
+            balance = self.fetch_balance(coin, address)
+        except Exception as e:
+            await ctx.reply(f'- Failed to fetch {coin.upper()} balance: {str(e)}', delete_after=5)
+            return
+        display_decimals = 2 if coin in ('usdc', 'usdt') else 8
+        await self.send_crypto_balance(ctx, coin.upper(), address, balance, self.supported_currencies[coin], display_decimals)
+    async def send_saved_address(self, ctx, coin):
+        await self.delete_message(ctx.message)
+        address = self.saved_addresses.get(coin)
+        if not address:
+            await ctx.reply(f'- No saved {coin.upper()} address. Use .addaddress {coin} <address>', delete_after=10)
+            return
+        await ctx.send(f'**{coin.upper()}** ~ `{address}`')
+    @commands.command(name='addaddress', aliases=['setaddress', 'saveaddress'], brief='Save a crypto address', usage='.addaddress <coin> <address>')
+    @ezlife()
+    async def addaddress(self, ctx, coin: str=None, address: str=None):
+        coin = (coin or '').lower()
+        if coin not in self.address_coins or not address:
+            await ctx.reply(f"- Usage: .addaddress <{'/'.join(self.address_coins)}> <address>", delete_after=10)
+            return
+        if not self.valid_address(coin, address):
+            await ctx.reply(f'- The provided {coin.upper()} address isnt valid', delete_after=5)
+            return
+        self.saved_addresses[coin] = address
+        self.save_saved_addresses()
+        await ctx.reply(f'- Saved {coin.upper()} address: `{address}`', delete_after=30)
+    @commands.command(name='deladdress', aliases=['removeaddress'], brief='Remove a saved crypto address', usage='.deladdress <coin>')
+    @ezlife()
+    async def deladdress(self, ctx, coin: str=None):
+        coin = (coin or '').lower()
+        if coin not in self.saved_addresses:
+            await ctx.reply('- No saved address for that coin', delete_after=5)
+            return
+        self.saved_addresses.pop(coin)
+        self.save_saved_addresses()
+        await ctx.reply(f'- Removed saved {coin.upper()} address', delete_after=10)
+    @commands.command(name='addresses', brief='List saved crypto addresses', usage='.addresses')
+    @ezlife()
+    async def addresses(self, ctx):
+        if not self.saved_addresses:
+            await ctx.reply('- No saved crypto addresses', delete_after=10)
+            return
+        message = '\n'.join(f'**{coin.upper()}** ~ `{address}`' for coin, address in self.saved_addresses.items())
+        await ctx.send(message)
+    @commands.command(name='ltc', brief='Send your saved LTC address', usage='.ltc')
+    @ezlife()
+    async def show_ltc(self, ctx):
+        await self.send_saved_address(ctx, 'ltc')
+    @commands.command(name='btc', brief='Send your saved BTC address', usage='.btc')
+    @ezlife()
+    async def show_btc(self, ctx):
+        await self.send_saved_address(ctx, 'btc')
+    @commands.command(name='eth', brief='Send your saved ETH address', usage='.eth')
+    @ezlife()
+    async def show_eth(self, ctx):
+        await self.send_saved_address(ctx, 'eth')
+    @commands.command(name='sol', brief='Send your saved SOL address', usage='.sol')
+    @ezlife()
+    async def show_sol(self, ctx):
+        await self.send_saved_address(ctx, 'sol')
+    @commands.command(name='usdc', brief='Send your saved USDC (ERC20) address', usage='.usdc')
+    @ezlife()
+    async def show_usdc(self, ctx):
+        await self.send_saved_address(ctx, 'usdc')
+    @commands.command(name='usdt', brief='Send your saved USDT (ERC20) address', usage='.usdt')
+    @ezlife()
+    async def show_usdt(self, ctx):
+        await self.send_saved_address(ctx, 'usdt')
 def setup(bot):
     bot.add_cog(Crypto(bot))
 class Nsfw(commands.Cog):
@@ -2747,6 +2846,13 @@ cog_classes = [AFK, ARs, Admin, Automsg, Crypto, Dump, Fun, Info, Logs, Nsfw, Pi
 for cog_class in cog_classes:
     cog = cog_class(bot)
     bot.add_cog(cog)
+help_command = bot.get_command('help')
+if help_command is not None:
+    for cog_name in bot.cogs:
+        module_alias = cog_name.lower()
+        if module_alias not in bot.all_commands:
+            help_command.aliases.append(module_alias)
+            bot.all_commands[module_alias] = help_command
 try:
     bot.run(token, reconnect=True)
 except discord.LoginFailure:
